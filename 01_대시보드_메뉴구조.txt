@@ -1,0 +1,37 @@
+================================================================
+         물류 작업 시스템 - 대시보드 메뉴 구조
+================================================================
+
+■ [작업] 섹션
+  - 재고 조사         /inventory_check
+  - 재고조사 로그     /inventory_logs              (187 알림)
+  - 즉시 출고         /route_style_immediate_shipping
+  - 출고 작업         /outbound_work
+  - 박스 포장         /tote_packing_scan
+  - 회송 기록         /return_record
+  - 반출 작업         /export_work
+  - 제품 리스트       /worker/product_list
+  - One Day 박스      /worker/one_day_box
+  - 쉘먼트 출력       /worker/shipment_export
+  - 토트 관리         /tote_management
+  - 위치 관리         /worker/location_management
+
+■ [관리] 섹션
+  - 포인트 관리       /point_management
+  - 청구              /payroll/dashboard
+  - 즉시출고 관리     /immediate_shipping
+  - 유저 관리         /user_list
+  - 작업자 관리       /worker/management
+  - 근무 현황         /attendance
+  - 급여 설정         /salary/settings
+  - 요율 관리         /user_rate_management
+  - 센터 배송일 관리  /center_ship_date_management
+  - 기록              /worker/records
+  - CS FAQ 관리       /cs_faq_management
+  - 토탈봇 계정       /worker/totalbot_program_accounts
+
+■ 상단 메뉴
+  - 관리자 페이지     /admin
+  - 로그아웃          /worker/logout
+
+================================================================

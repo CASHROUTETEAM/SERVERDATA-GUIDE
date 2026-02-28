@@ -1,0 +1,215 @@
+================================================================
+  서버 성능 분석 보고서 (재고 업데이트 속도 저하 요인)
+  작성일: 2026-02-26
+================================================================
+
+■ 분석 대상
+- 서버: root@114.202.247.228
+- 주요 DB: /var/www/totalbotserver/user_data.db (SQLite)
+- 분석 범위: 재고/입출고 데이터 조회 및 업데이트 관련 API
+
+
+================================================================
+1. 현재 테이블 규모
+================================================================
+
+  테이블명          행 수       인덱스
+  ─────────────────────────────────────────────────────────────
+  inventory_data    22,320      barcode, username (정상)
+  in_out_list      359,441      없음 (문제)
+  product_list     121,515      없음 (문제)
+  shipment_data    154,404      5개 (barcode, username, dates 등)
+
+
+================================================================
+2. 속도 저하 요인 목록
+================================================================
+
+[요인 1] in_out_list / product_list 인덱스 전무 (가장 시급)
+──────────────────────────────────────────────────────────────
+- in_out_list 35만 9천 건에 인덱스가 단 하나도 없음
+- product_list 12만 1천 건도 인덱스 없음
+- username 검색 시 매번 전체 행을 처음부터 끝까지 읽음
+- 데이터가 쌓일수록 선형으로 느려짐 (2배 데이터 = 2배 느림)
+
+영향 받는 API:
+  - /api/in_out_list/by_username   (입출고 목록 조회)
+  - /api/in_out_list/by_reference  (문서번호 기준 조회)
+  - /api/product_list/by_username  (제품 목록 조회)
+  - /api/inventory_data/by_username (재고 조회)
+
+
+[요인 2] Reference 번호 생성 — 전체 스캔 방식
+──────────────────────────────────────────────────────────────
+- 출고/입고 처리 시 reference 번호(WH/출고/A1, WH/입고/A1 등) 생성
+- 현재 방식: 35만 9천 건에서 LIKE 'WH/출고/A%' 전체 읽어
+  파이썬에서 MAX 값 계산
+- 상품 1개 처리마다 이 작업이 2번(입고+출고) 반복됨
+- 상품 100개 처리 = 35만 행 × 200번 스캔
+
+코드 위치: app.py
+  - get_next_outbound_reference() (line 604)
+  - get_next_inbound_reference()  (line 624)
+  - get_next_adjustment_reference() (line 645)
+
+
+[요인 3] N+1 쿼리 — 제품 목록 조회 시
+──────────────────────────────────────────────────────────────
+- /api/product_list 에서 제품 50개를 가져온 뒤
+  각 제품마다 get_realtime_stock() 개별 호출
+- get_realtime_stock() 내부에서 DB 쿼리 3번 실행
+  (InventoryData 합계 / ShipmentData 합계 / ProductList coming_stock)
+- 제품 50개 조회 = 최소 150번 DB 쿼리 발생
+
+
+[요인 4] update_product_stock() 전체 업데이트 시
+──────────────────────────────────────────────────────────────
+- barcode 미지정으로 호출 시 product_list 전체 12만 건 순회
+- 각 제품마다 InventoryData + ShipmentData 개별 쿼리
+- 전체 업데이트 1회 = 최소 24만 번 DB 쿼리
+
+
+[요인 5] 중복 바코드 체크 활성화 유저
+──────────────────────────────────────────────────────────────
+- requires_duplicate_check=True 유저의 경우
+- 바코드 목록 전체로 ShipmentData IN 쿼리 추가 2회 실행
+- shipment_data 15만 4천 건에 IN(바코드 수백 개) 조건
+
+
+[요인 6] shipment_data 복합 인덱스 부재
+──────────────────────────────────────────────────────────────
+- get_realtime_stock()에서 barcode + username + ship_end_date
+  세 조건을 동시에 사용
+- barcode 단일 인덱스만 있어서 username, ship_end_date는
+  매번 추가 필터링 필요
+
+
+================================================================
+3. 개선 방안 — 인덱스 추가 (5개)
+================================================================
+
+우선순위  테이블           인덱스                효과
+────────────────────────────────────────────────────────────────────
+★★★     in_out_list      (username)            입출고 목록 조회 속도 개선
+★★★     in_out_list      (reference)           reference 번호 생성 속도 개선
+★★★     product_list     (barcode)             재고 조회 시 제품 매칭 속도 개선
+★★★     product_list     (username)            제품 목록 조회 속도 개선
+★★       shipment_data   (barcode, username,   출고 예정 수량 계산 속도 개선
+                           ship_end_date)
+
+SQL 예시:
+  CREATE INDEX idx_inout_username ON in_out_list(username);
+  CREATE INDEX idx_inout_reference ON in_out_list(reference);
+  CREATE INDEX idx_product_barcode ON product_list(barcode);
+  CREATE INDEX idx_product_username ON product_list(username);
+  CREATE INDEX idx_shipment_compound ON shipment_data(barcode, username, ship_end_date);
+
+
+================================================================
+4. 추가 개선 방안 (코드 수정 필요)
+================================================================
+
+① reference 번호 생성 로직 개선
+   현재: 전체 행 읽어서 파이썬에서 MAX 계산
+   개선: SELECT MAX(reference) FROM in_out_list WHERE reference LIKE '...'
+         → DB에서 MAX 바로 계산 (인덱스와 함께 쓰면 거의 즉시 응답)
+
+② get_realtime_stock() 호출 방식 개선
+   현재: 제품 N개 × 개별 쿼리 3번
+   개선: 바코드 리스트로 한 번에 집계 쿼리 → 1~2번으로 압축
+
+
+================================================================
+5. 인덱스 추가 시 주의사항
+================================================================
+
+- 서비스 중단 없이 추가 가능
+- 단, 추가 작업 중 수 초간 해당 테이블 쓰기 잠김 발생 가능
+- 물류 작업이 없는 시간대 권장 (야간 / 점심 시간)
+- 인덱스 추가 후 저장 공간 약간 증가 (수십 MB 이내 예상)
+- 데이터 자체는 변경 없음
+
+
+================================================================
+6. 현재 백업 위치 (2026-02-26 작업분)
+================================================================
+
+서버 내 백업: /root/backup_20260226/
+  - gunicorn-totalbot.service (원본)
+  - app.py.bak
+  - picking_process.html.bak
+  - nginx 설정 파일들
+
+
+================================================================
+7. 오늘 수행한 서버 작업 요약
+================================================================
+
+① gunicorn 무한 재시작 루프 해결
+   - worker 수 3 → 1로 축소
+   - systemd 서비스로 통합 관리
+   - RAM 1200MB → 825MB (-375MB, 31% 감소)
+
+② journald 로그 정리
+   - 2.8GB → 512MB (2.3GB 확보)
+   - 용량 제한 설정: SystemMaxUse=500M
+
+③ 프린트 장애 수정
+   - Socket.IO 타임아웃 연장 (20s → 60s)
+   - 프린트 작업 큐 구현 (에이전트 재연결 시 자동 재전송)
+
+④ 피킹 화면 기능 추가
+   - 같은 위치의 대기 중인 다른 상품 목록 드롭다운 표시
+
+⑤ DB 인덱스 5개 추가 (app.py 수정 없음, DB만 변경)
+   - in_out_list(username)                          → 입출고 목록 조회 속도 개선
+   - in_out_list(reference)                         → reference 번호 생성 속도 개선
+   - product_list(barcode)                          → 재고 조회 제품 매칭 속도 개선
+   - product_list(username)                         → 제품 목록 조회 속도 개선
+   - shipment_data(barcode, username, ship_end_date) → 출고 예정 수량 계산 속도 개선
+
+⑥ Reference 번호 생성 로직 개선 (app.py 수정)
+   - 3개 함수 개선: get_next_outbound/inbound/adjustment_reference()
+   - 변경 전: 35만 행 전체 읽어 파이썬에서 MAX 계산 (상품당 2회 반복)
+   - 변경 후: DB MAX() 함수로 즉시 계산 (인덱스와 함께 거의 즉시 응답)
+   - 백업: /root/backup_20260226/app.py.bak2
+
+⑦ TTL 캐싱 적용 (app.py 수정)
+   적용 API:
+   - /api/inventory_data/by_username  (재고 조회)
+   - /api/in_out_list/by_username     (입출고 이력 조회)
+   - /api/product_list/by_username    (제품 목록 조회)
+
+   캐시 분류:
+   ┌──────────────────────────────┬──────────┬────────────────────────────┐
+   │ 데이터                       │ TTL      │ 비고                       │
+   ├──────────────────────────────┼──────────┼────────────────────────────┤
+   │ 제품 기본정보                │ 10분     │ 상품명, 바코드, 브랜드 등  │
+   │ (product_info_cache)         │          │ 자주 바뀌지 않는 고유값    │
+   ├──────────────────────────────┼──────────┼────────────────────────────┤
+   │ 재고 수량                    │ 30초     │ total/reserved/available   │
+   │ (stock_qty_cache)            │          │ 출고 처리 시 자동 무효화   │
+   ├──────────────────────────────┼──────────┼────────────────────────────┤
+   │ 입출고 이력                  │ 5분      │ 과거 기록은 변하지 않음    │
+   │ (inout_history_cache)        │          │ 출고 처리 시 자동 무효화   │
+   └──────────────────────────────┴──────────┴────────────────────────────┘
+
+   캐시 무효화 시점:
+   - 출고 처리(process_inventory_to_odoo) 완료 시 → 수량/이력 캐시 자동 초기화
+   - 피킹 상태, 작업 진행 상황 → 캐싱 제외 (실시간 유지)
+
+   백업: /root/backup_20260226/app.py.bak3
+
+================================================================
+8. 백업 파일 목록 (2026-02-26)
+================================================================
+
+/root/backup_20260226/
+  - gunicorn-totalbot.service  (원본 systemd 설정)
+  - app.py.bak                 (최초 원본)
+  - app.py.bak2                (인덱스+reference 수정 후)
+  - app.py.bak3                (캐싱 적용 전)
+  - picking_process.html.bak   (피킹 화면 원본)
+  - nginx 설정 파일들 (fitness-tracker, guideu, supplier.coudang.com, totalbotserver, ttld)
+
+================================================================
