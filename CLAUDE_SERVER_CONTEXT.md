@@ -2,7 +2,7 @@
 
 > **이 문서는 Claude AI가 서버 작업 시 참조하는 컨텍스트 문서입니다.**
 > 사용자: kang in (kangin8697@gmail.com)
-> 최종 업데이트: 2026-02-27
+> 최종 업데이트: 2026-03-03
 
 ---
 
@@ -369,12 +369,13 @@ if limit != -1 and current_used + count > limit:
 WH/Stock/{구역}{번호}-{선반}
 예: WH/Stock/A4-510
 
-구역: A1~A9, B1~B3, C1~C2, D1~D4, E1~E3, F1~F3
+구역: A1~A9, B1~B3, C1~C2, D1~D4, E1~E3, F1~F3, P, R, Z
+(P/R/Z는 2026-03 추가, R=구 RF, Z=구 TE)
 ```
 
 ---
 
-## 6. 수정 이력 (2026-02-27)
+## 6. 수정 이력
 
 ### 6-1. auth.js — Flask DB 등급 동기화 추가
 
@@ -418,7 +419,37 @@ WHERE grade IN ('student', 'premium');
 -- 포인트 환불: 10명, 총 20,400원 (category='반출', description에 ROLLBACK_20260227)
 -- in_out_list 반출 기록 47건 삭제 (재고는 복원 안 함)
 -- export_tasks/items는 유지 (삭제 후 백업에서 복원)
--- 반출4(id=79), 반출5(id=80): completed → in_progress로 변경
+-- 반출4(id=79), 반출5(id=80): completed → in_progress로 변경 후 재진행
+```
+
+### 6-5. 2026-02-28 추가 변경
+
+```
+-- 반출 0227 전체 최종 완료:
+   반출1(76): 245개중 243개 스캔 completed
+   반출2(77): 190개중 190개 스캔 completed (2026-02-28 12:29)
+   반출3(78): 196개중 195개 스캔 completed
+   반출4(79): 156개중 156개 스캔 completed (2026-02-28 12:44)
+   반출5(80): 174개중 172개 스캔 completed
+
+-- 무료입고 대량 처리: WH/입고/FREE/00373~00381 (약 9건 배치)
+-- 새 백업: user_data.db.backup_export_rollback_20260228_041102
+```
+
+### 6-6. 2026-03-03 추가 변경
+
+```
+-- version.json에 신규 앱 항목 추가:
+   balzubotversion: 1.1.9 → http://114.202.247.228/updates/balzubot_1.1.9.zip
+   zangsanbotversion: 1.0.2 → http://114.202.247.228/updates/zangsanbot_1.0.2.zip
+   imagebot_version: 1.0.0 → http://114.202.247.228/updates/imagebot_1.0.0.zip
+
+-- 재고 구역 변경: RF→R, TE→Z로 명칭 변경, P 구역 신규 추가
+   현재 구역: A/B/C/D/E/F/P/R/Z
+
+-- happymine(김호연) 포인트 0P로 조정 (관리자 직접 수정, -17,300P)
+-- fktpstm83(배소연) 150,000P 충전 (REQ-316, 에드(ADD) 입금)
+-- pm2 재시작 횟수: 59회 (2026-02-26 기준 46회에서 증가)
 ```
 
 ---
@@ -484,14 +515,23 @@ API 엔드포인트 (Flask):
 ## 9. 데스크톱 앱 버전 관리
 
 ```json
-// /var/www/totalbotserver/version.json
+// /var/www/totalbotserver/version.json (2026-03-03 기준)
 {
     "version": "1.1.6",
     "update_url": "http://114.202.247.228/updates/cashbot_1.1.6.zip",
+
+    "balzubotversion": "1.1.9",
+    "balzubot_update_url": "http://114.202.247.228/updates/balzubot_1.1.9.zip",
+
+    "zangsanbotversion": "1.0.2",
+    "zangsanbot_update_url": "http://114.202.247.228/updates/zangsanbot_1.0.2.zip",
+
+    "imagebot_version": "1.0.0",
+    "imagebot_update_url": "http://114.202.247.228/updates/imagebot_1.0.0.zip",
+
     "totalbot_version": "1.0.60",
     "totalbot_update_url": "http://114.202.247.228/updates/totalbot_1.0.49.zip"
 }
-// 스캐너 앱 항목은 아직 없음
 ```
 
 ---
@@ -538,9 +578,12 @@ SELECT category, COUNT(*), SUM(amount) FROM point_history GROUP BY category;
 ## 11. 백업 목록 (서버 내)
 
 ```
-/var/www/totalbotserver/user_data.db.backup_export_rollback_20260227173159
+/var/www/totalbotserver/user_data.db.backup_20260224_161449          (312MB)
+/var/www/totalbotserver/user_data.db.backup_export_rollback_20260227173159  (345MB)
+/var/www/totalbotserver/user_data.db.backup_export_rollback_20260228_041102 (346MB) ← 최신
 /var/www/totalbotserver/app.py.backup_limits_20260227
 /var/www/totalbotserver/totalbot_node/server/routes/auth.js.backup_20260227
+/root/backup_20260226/app.py.bak, app.py.bak2, app.py.bak3
 ```
 
 ---
@@ -553,4 +596,6 @@ SELECT category, COUNT(*), SUM(amount) FROM point_history GROUP BY category;
 [ ] 가이드유 회원 통합
 [ ] 스캐너 앱 version.json 항목 추가
 [ ] 반출 0227 반출1~5 이후 나머지 2,070개 미출고 SKU 반출 처리
+[x] 반출 0227 반출1~5 포인트 환불 및 재진행 (완료: 2026-02-28)
+[x] balzubot/zangsanbot/imagebot version.json 추가 (완료: 2026-03-03)
 ```
